@@ -1,0 +1,8 @@
+[package]
+name = "mcc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = "1.0.203"
+structopt = "0.3.26"
