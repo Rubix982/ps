@@ -2,32 +2,45 @@ use pnet::datalink::{self, Channel::Ethernet};
 use pnet::packet::{ethernet::EthernetPacket, ip::IpNextHeaderProtocols, Packet};
 use pnet::packet::tcp::TcpPacket;
 use pnet::packet::udp::UdpPacket;
-use std::env;
-use clap::{Arg};
 use inquire::{Text, Select};
 use colored::*;
 use indicatif::ProgressBar;
 
 fn main() {
     interactive_cli();
-    return;
-    // List available network interfaces
+}
+
+fn interactive_cli() {
+    // Ask the user for the network interface
     let interfaces = datalink::interfaces();
+    let interface_names: Vec<String> = interfaces.iter().map(|iface| iface.name.clone()).collect();
+    
+    let selected_interface = Select::new("Select Network Interface:", interface_names)
+        .prompt()
+        .expect("Failed to select network interface");
 
-    println!("Available Network Interfaces:");
-    for interface in &interfaces {
-        println!("{}", interface);
-    }
-
-    // Select an interface (.e.g, eth0)
-    let interface_name = env::args().nth(1).expect("Usage: packet_sniffer <INTERFACE>");
     let interface = interfaces
         .into_iter()
-        .find(|iface| iface.name == interface_name)
+        .find(|iface| iface.name == selected_interface)
         .expect("Error: Interface not found");
 
+    // Ask the user for the protocol to filter by
+    let protocol = Select::new("Select Protocol to Capture:", vec!["TCP", "UDP", "ICMP", "ALL"])
+        .prompt()
+        .expect("Failed to select protocol");
+
+    // Ask the user for the port to filter by (optional)
+    let port = Text::new("Enter a port to filter by (leave empty for all):")
+        .prompt()
+        .unwrap();
+
+    // Start capturing packets based on user choices
+    start_packet_capture(&interface, &protocol, &port);
+}
+
+fn start_packet_capture(interface: &pnet::datalink::NetworkInterface, protocol: &str, port: &str) {
     // Create a channel to capture packets
-    let (_, mut rx) = match datalink::channel(&interface, Default::default()) {
+    let (_, mut rx) = match datalink::channel(interface, Default::default()) {
         Ok(Ethernet(tx, rx)) => (tx, rx),
         Ok(_) => panic!("Error: Unknown channel type."),
         Err(e) => panic!("Error: Unable to create datalink channel: {:?}", e),
@@ -35,53 +48,74 @@ fn main() {
 
     println!("Listening on interface: {}", interface.name);
 
+    // Create a progress bar for the packet capture
+    let pb = ProgressBar::new(100);
+
+    // Errors below
+    // pb.set_style(indicatif::ProgressStyle::default_bar().template("{spinner:.green} {msg}").progress_chars("##"));
+
     loop {
-        // Receive a packet
         match rx.next() {
             Ok(packet) => {
                 // Parse the packet as an Ethernet frame
                 let ethernet = EthernetPacket::new(packet).unwrap();
-                handle_packet(&ethernet);
+                handle_packet(&ethernet, protocol, port);
             }
             Err(e) => {
                 eprintln!("Error: Unable to receive packet: {}", e);
             }
         }
+
+        pb.inc(1); // Increment the progress bar with each packet received
     }
 }
 
-// Handle an Ethernet packet
-fn handle_packet(ethernet: &EthernetPacket) {
+fn handle_packet(ethernet: &EthernetPacket, protocol: &str, port: &str) {
     match ethernet.get_ethertype() {
-        // Parse IPv4 packets
         pnet::packet::ethernet::EtherTypes::Ipv4 => {
             if let Some(ip_packet) = pnet::packet::ipv4::Ipv4Packet::new(ethernet.payload()) {
-                println!(
-                    "IPv4 Packet: {} -> {}",
-                    ip_packet.get_source(),
-                    ip_packet.get_destination()
-                );
-
+                // Filter by IP protocol
                 match ip_packet.get_next_level_protocol() {
                     IpNextHeaderProtocols::Tcp => {
-                        if let Some(tcp) = TcpPacket::new(ip_packet.payload()) {
-                            println!(
-                                "TCP Packet: {}:{} -> {}:{}",
-                                ip_packet.get_source(),
-                                tcp.get_source(),
-                                ip_packet.get_destination(),
-                                tcp.get_destination()
-                            );
+                        if protocol == "TCP" || protocol == "ALL" {
+                            if let Some(tcp) = TcpPacket::new(ip_packet.payload()) {
+                                // Filter by port if specified
+                                if port.is_empty() || tcp.get_source() == port.parse::<u16>().unwrap() || tcp.get_destination() == port.parse::<u16>().unwrap() {
+                                    println!(
+                                        "{} TCP: {}:{} -> {}:{}",
+                                        "TCP".green(),
+                                        ip_packet.get_source(),
+                                        tcp.get_source(),
+                                        ip_packet.get_destination(),
+                                        tcp.get_destination()
+                                    );
+                                }
+                            }
                         }
                     }
                     IpNextHeaderProtocols::Udp => {
-                        if let Some(udp) = UdpPacket::new(ip_packet.payload()) {
+                        if protocol == "UDP" || protocol == "ALL" {
+                            if let Some(udp) = UdpPacket::new(ip_packet.payload()) {
+                                if port.is_empty() || udp.get_source() == port.parse::<u16>().unwrap() || udp.get_destination() == port.parse::<u16>().unwrap() {
+                                    println!(
+                                        "{} UDP: {}:{} -> {}:{}",
+                                        "UDP".blue(),
+                                        ip_packet.get_source(),
+                                        udp.get_source(),
+                                        ip_packet.get_destination(),
+                                        udp.get_destination()
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    IpNextHeaderProtocols::Icmp => {
+                        if protocol == "ICMP" || protocol == "ALL" {
                             println!(
-                                "UDP Packet: {}:{} -> {}:{}",
+                                "{} ICMP: {} -> {}",
+                                "ICMP".yellow(),
                                 ip_packet.get_source(),
-                                udp.get_source(),
-                                ip_packet.get_destination(),
-                                udp.get_destination()
+                                ip_packet.get_destination()
                             );
                         }
                     }
@@ -89,52 +123,6 @@ fn handle_packet(ethernet: &EthernetPacket) {
                 }
             }
         }
-        // Parse other protocols if needed
         _ => println!("Non-IPv4 Packet"),
-    }
-}
-
-fn interactive_cli() {
-    let matches = clap::Command::new("Interactive CLI")
-        .version("1.0")
-        .about("Packet Monitor Tool")
-        .arg(
-            Arg::new("interactive")
-                .short('i')
-                .long("interactive")
-                .help("Run in interactive mode"),
-        )
-        .get_matches();
-
-    if matches.contains_id("interactive") {
-        println!("{}", "Interactive Mode".cyan().bold());
-        let protocol = Select::new(
-            "Select a protocol:",
-            vec!["TCP", "UDP", "ICMP"],
-        )
-            .prompt()
-            .unwrap();
-
-        let port = Text::new("Enter the port number:")
-            .prompt()
-            .unwrap();
-
-        println!(
-            "{} {} traffic on port {}",
-            "Monitoring".green().bold(),
-            protocol,
-            port
-        );
-
-        let bar = ProgressBar::new(100);
-        let mut counter = 0;
-        while counter < 100 {
-            bar.inc(1);
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            counter += 1;
-        }
-        bar.finish_with_message("Done!");
-    } else {
-        println!("{}", "Non-interactive Mode. Use `--interactive` for UI.".red());
     }
 }
