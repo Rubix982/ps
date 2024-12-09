@@ -38,7 +38,7 @@ fn interactive_cli() {
     start_packet_capture(&interface, &protocol, &port);
 }
 
-fn start_packet_capture(interface: &pnet::datalink::NetworkInterface, protocol: &str, port: &str) {
+fn start_packet_capture(interface: &datalink::NetworkInterface, protocol: &str, port: &str) {
     // Create a channel to capture packets
     let (_, mut rx) = match datalink::channel(interface, Default::default()) {
         Ok(Ethernet(tx, rx)) => (tx, rx),
@@ -52,7 +52,7 @@ fn start_packet_capture(interface: &pnet::datalink::NetworkInterface, protocol: 
     let pb = ProgressBar::new(100);
 
     // Errors below
-    // pb.set_style(indicatif::ProgressStyle::default_bar().template("{spinner:.green} {msg}").progress_chars("##"));
+    pb.set_style(indicatif::ProgressStyle::default_bar().template("{spinner:.green} {msg}").unwrap().progress_chars("##"));
 
     loop {
         match rx.next() {
@@ -80,7 +80,7 @@ fn handle_packet(ethernet: &EthernetPacket, protocol: &str, port: &str) {
                         if protocol == "TCP" || protocol == "ALL" {
                             if let Some(tcp) = TcpPacket::new(ip_packet.payload()) {
                                 // Filter by port if specified
-                                if port.is_empty() || tcp.get_source() == port.parse::<u16>().unwrap() || tcp.get_destination() == port.parse::<u16>().unwrap() {
+                                if should_log_packet(port, tcp.get_source(), tcp.get_destination()) {
                                     println!(
                                         "{} TCP: {}:{} -> {}:{}",
                                         "TCP".green(),
@@ -96,7 +96,7 @@ fn handle_packet(ethernet: &EthernetPacket, protocol: &str, port: &str) {
                     IpNextHeaderProtocols::Udp => {
                         if protocol == "UDP" || protocol == "ALL" {
                             if let Some(udp) = UdpPacket::new(ip_packet.payload()) {
-                                if port.is_empty() || udp.get_source() == port.parse::<u16>().unwrap() || udp.get_destination() == port.parse::<u16>().unwrap() {
+                                if should_log_packet(port, udp.get_source(), udp.get_destination()) {
                                     println!(
                                         "{} UDP: {}:{} -> {}:{}",
                                         "UDP".blue(),
@@ -125,4 +125,8 @@ fn handle_packet(ethernet: &EthernetPacket, protocol: &str, port: &str) {
         }
         _ => println!("Non-IPv4 Packet"),
     }
+}
+
+fn should_log_packet(port: &str, source: u16, destination: u16) -> bool {
+    port.is_empty() || source == port.parse::<u16>().unwrap() || destination == port.parse::<u16>().unwrap()
 }
