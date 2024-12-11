@@ -1,12 +1,17 @@
+mod logger;
+mod logger_test;
+mod utils;
+mod handlers;
+
+use std::error::Error;
 use pnet::datalink::{self, Channel::Ethernet};
 use pnet::packet::{ethernet::EthernetPacket, ip::IpNextHeaderProtocols, Packet};
-use pnet::packet::tcp::TcpPacket;
-use pnet::packet::udp::UdpPacket;
 use inquire::{Text, Select};
 use colored::*;
 use indicatif::ProgressBar;
 
 fn main() {
+    let _ = logger::setup_logger();
     interactive_cli();
 }
 
@@ -25,7 +30,8 @@ fn interactive_cli() {
         .expect("Error: Interface not found");
 
     // Ask the user for the protocol to filter by
-    let protocol = Select::new("Select Protocol to Capture:", vec!["TCP", "UDP", "ICMP", "ALL"])
+    let protocols = vec!["TCP", "UDP", "ICMP", "ALL"];
+    let protocol = Select::new("Select Protocol to Capture:", protocols)
         .prompt()
         .expect("Failed to select protocol");
 
@@ -74,59 +80,14 @@ fn handle_packet(ethernet: &EthernetPacket, protocol: &str, port: &str) {
     match ethernet.get_ethertype() {
         pnet::packet::ethernet::EtherTypes::Ipv4 => {
             if let Some(ip_packet) = pnet::packet::ipv4::Ipv4Packet::new(ethernet.payload()) {
-                // Filter by IP protocol
                 match ip_packet.get_next_level_protocol() {
-                    IpNextHeaderProtocols::Tcp => {
-                        if protocol == "TCP" || protocol == "ALL" {
-                            if let Some(tcp) = TcpPacket::new(ip_packet.payload()) {
-                                // Filter by port if specified
-                                if should_log_packet(port, tcp.get_source(), tcp.get_destination()) {
-                                    println!(
-                                        "{} TCP: {}:{} -> {}:{}",
-                                        "TCP".green(),
-                                        ip_packet.get_source(),
-                                        tcp.get_source(),
-                                        ip_packet.get_destination(),
-                                        tcp.get_destination()
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    IpNextHeaderProtocols::Udp => {
-                        if protocol == "UDP" || protocol == "ALL" {
-                            if let Some(udp) = UdpPacket::new(ip_packet.payload()) {
-                                if should_log_packet(port, udp.get_source(), udp.get_destination()) {
-                                    println!(
-                                        "{} UDP: {}:{} -> {}:{}",
-                                        "UDP".blue(),
-                                        ip_packet.get_source(),
-                                        udp.get_source(),
-                                        ip_packet.get_destination(),
-                                        udp.get_destination()
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    IpNextHeaderProtocols::Icmp => {
-                        if protocol == "ICMP" || protocol == "ALL" {
-                            println!(
-                                "{} ICMP: {} -> {}",
-                                "ICMP".yellow(),
-                                ip_packet.get_source(),
-                                ip_packet.get_destination()
-                            );
-                        }
-                    }
+                    IpNextHeaderProtocols::Tcp => handlers::tcp_handler(ip_packet, protocol, port),
+                    IpNextHeaderProtocols::Udp => handlers::udp_handler(ip_packet, protocol, port),
+                    IpNextHeaderProtocols::Icmp => handlers::icmp_handler(ip_packet, protocol),
                     _ => println!("Other IPv4 Packet"),
                 }
             }
         }
         _ => println!("Non-IPv4 Packet"),
     }
-}
-
-fn should_log_packet(port: &str, source: u16, destination: u16) -> bool {
-    port.is_empty() || source == port.parse::<u16>().unwrap() || destination == port.parse::<u16>().unwrap()
 }
